@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>고등학교 1학년 국어 문제 출제기</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@100..900&display=swap');
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            background-color: #f4f7f9;
+        }
+        .container {
+            min-height: 100vh;
+        }
+        .quiz-card {
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+        .option-button {
+            border: 2px solid #e5e7eb;
+            transition: all 0.2s;
+            text-align: left;
+        }
+        .option-button:hover {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+        .option-button.selected {
+            background-color: #bfdbfe;
+            border-color: #2563eb;
+        }
+        .loading-animation {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+    <div class="container mx-auto max-w-2xl flex flex-col items-center py-10">
+        <h1 class="text-3xl sm:text-4xl font-extrabold text-gray-800 mb-8 text-center">
+            📚 고1 국어 마스터 퀴즈 💯
+        </h1>
+
+        <div id="quiz-area" class="w-full bg-white quiz-card rounded-xl p-6 sm:p-8">
+            <div id="loading-state" class="flex flex-col items-center justify-center p-12 hidden">
+                <div class="loading-animation mb-4"></div>
+                <p class="text-gray-600 font-medium">새로운 국어 문제를 출제하는 중입니다...</p>
+            </div>
+
+            <div id="question-state" class="hidden">
+                <p id="topic" class="text-sm font-semibold text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full mb-4 inline-block"></p>
+                
+                <div class="text-xl font-bold text-gray-800 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <span class="text-indigo-600 mr-2">Q.</span>
+                    <span id="question-text"></span>
+                </div>
+
+                <div id="options-container" class="space-y-3 mb-6">
+                    <!-- Options will be injected here -->
+                </div>
+
+                <button onclick="checkAnswer()" id="submit-button"
+                        class="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition duration-150 shadow-lg disabled:bg-indigo-300">
+                    정답 확인
+                </button>
+            </div>
+        </div>
+
+        <!-- Result and Next Button Area -->
+        <div id="result-area" class="w-full mt-6 p-4 sm:p-6 rounded-xl hidden">
+            <div id="result-message" class="text-xl font-bold mb-4"></div>
+            <div id="explanation-container" class="text-gray-700 text-base bg-gray-100 p-4 rounded-lg">
+                <p class="font-bold text-indigo-700 mb-2">해설:</p>
+                <p id="explanation-text"></p>
+            </div>
+            <button onclick="generateQuestion()" id="next-button"
+                    class="mt-6 w-full py-3 bg-green-500 text-white font-bold rounded-lg hover:bg-green-600 transition duration-150 shadow-lg">
+                다음 문제 출제
+            </button>
+        </div>
+
+        <div id="error-message" class="mt-6 text-red-600 font-medium hidden">
+            죄송합니다. 문제를 가져오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.
+        </div>
+    </div>
+
+    <script>
+        // --- Global Variables and Firebase Setup (Mandatory environment variables) ---
+        const apiKey = ""; // API Key placeholder
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        // Data structure to hold the current quiz state
+        let currentQuestionData = null;
+        let selectedOptionIndex = null;
+        let isAnswerChecked = false;
+
+        // Utility function for exponential backoff retry
+        async function retryFetch(apiCall, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    return await apiCall();
+                } catch (error) {
+                    if (i === maxRetries - 1) throw error;
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    console.warn(`Retrying in ${delay / 1000}s... (Attempt ${i + 1}/${maxRetries})`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+
+        // 1. Generate Question using Gemini API
+        async function generateQuestion() {
+            setUiState('loading');
+            
+            // System instruction in Korean for 10th-grade level (고1 국어)
+            const systemPrompt = "당신은 고등학교 1학년 수준의 국어(한국어) 시험 문제를 출제하는 전문가입니다. 문학, 문법, 독해 중 하나의 영역에서 고1 과정에 맞는 심화된 객관식 5지 선다형 문제 1개를 생성하세요. 답변은 반드시 아래의 JSON 스키마를 따라야 합니다.";
+            const userQuery = "새로운 국어 문제를 출제해 주세요.";
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            "topic": { "type": "STRING", "description": "출제 영역 (예: 현대시, 중세 국어 문법, 비문학 독해)" },
+                            "question": { "type": "STRING", "description": "문제 내용" },
+                            "options": { 
+                                "type": "ARRAY", 
+                                "items": { "type": "STRING" },
+                                "description": "5개의 선택지 목록"
+                            },
+                            "answer_index": { "type": "INTEGER", "description": "정답 번호 (1부터 5까지)" },
+                            "explanation": { "type": "STRING", "description": "정답에 대한 상세 해설" }
+                        },
+                        "required": ["topic", "question", "options", "answer_index", "explanation"]
+                    }
+                }
+            };
+
+            try {
+                const apiCall = async () => {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response;
+                };
+
+                const response = await retryFetch(apiCall);
+                const result = await response.json();
+
+                const jsonText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!jsonText) throw new Error("API 응답에서 JSON 텍스트를 찾을 수 없습니다.");
+                
+                const data = JSON.parse(jsonText);
+                currentQuestionData = data;
+                displayQuestion(data);
+
+            } catch (error) {
+                console.error("문제 생성 중 오류 발생:", error);
+                setUiState('error');
+            }
+        }
+
+        // 2. Display the question in the UI
+        function displayQuestion(data) {
+            // Reset state
+            selectedOptionIndex = null;
+            isAnswerChecked = false;
+            
+            document.getElementById('topic').textContent = `[${data.topic}]`;
+            document.getElementById('question-text').textContent = data.question;
+            document.getElementById('result-area').classList.add('hidden');
+            document.getElementById('submit-button').disabled = true;
+
+            const optionsContainer = document.getElementById('options-container');
+            optionsContainer.innerHTML = '';
+            
+            data.options.forEach((option, index) => {
+                const optionElement = document.createElement('button');
+                const optionNumber = index + 1;
+
+                optionElement.className = 'option-button w-full p-4 rounded-lg flex items-start text-gray-700';
+                optionElement.innerHTML = `<span class="font-bold mr-3">${optionNumber}.</span><span class="flex-1">${option}</span>`;
+                optionElement.setAttribute('data-index', optionNumber);
+                optionElement.onclick = () => selectOption(optionNumber, optionElement);
+                
+                optionsContainer.appendChild(optionElement);
+            });
+
+            setUiState('question');
+        }
+
+        // 3. Handle option selection
+        function selectOption(index, element) {
+            if (isAnswerChecked) return; // Prevent selection change after checking
+            
+            // Deselect all others
+            document.querySelectorAll('.option-button').forEach(btn => {
+                btn.classList.remove('selected');
+            });
+
+            // Select current
+            element.classList.add('selected');
+            selectedOptionIndex = index;
+            document.getElementById('submit-button').disabled = false;
+        }
+
+        // 4. Check the user's answer
+        function checkAnswer() {
+            if (selectedOptionIndex === null || isAnswerChecked || !currentQuestionData) return;
+
+            isAnswerChecked = true;
+            document.getElementById('submit-button').disabled = true; // Lock submission
+            
+            const options = document.getElementById('options-container').querySelectorAll('.option-button');
+            const correctAnswerIndex = currentQuestionData.answer_index;
+            const isCorrect = selectedOptionIndex === correctAnswerIndex;
+            
+            // Visually update result message
+            const resultArea = document.getElementById('result-area');
+            const resultMessage = document.getElementById('result-message');
+            const explanationText = document.getElementById('explanation-text');
+
+            if (isCorrect) {
+                resultMessage.textContent = '✅ 정답입니다! 아주 잘 하셨어요.';
+                resultMessage.classList.remove('text-red-600');
+                resultMessage.classList.add('text-green-600');
+                resultArea.classList.remove('bg-red-50');
+                resultArea.classList.add('bg-green-50');
+            } else {
+                resultMessage.textContent = '❌ 아쉽습니다! 정답이 아닙니다.';
+                resultMessage.classList.remove('text-green-600');
+                resultMessage.classList.add('text-red-600');
+                resultArea.classList.remove('bg-green-50');
+                resultArea.classList.add('bg-red-50');
+            }
+
+            // Highlight buttons
+            options.forEach(btn => {
+                const btnIndex = parseInt(btn.getAttribute('data-index'));
+                btn.disabled = true; // Disable all option buttons
+
+                if (btnIndex === correctAnswerIndex) {
+                    btn.classList.remove('selected', 'bg-bfdbfe', 'border-2');
+                    btn.classList.add('bg-green-100', 'border-green-600', 'font-bold'); // Correct Answer Highlight
+                } else if (btnIndex === selectedOptionIndex) {
+                    btn.classList.remove('selected', 'bg-bfdbfe', 'border-2');
+                    btn.classList.add('bg-red-100', 'border-red-600', 'line-through', 'text-gray-500'); // Wrong Selection Highlight
+                }
+            });
+
+            // Display explanation
+            explanationText.textContent = currentQuestionData.explanation;
+            resultArea.classList.remove('hidden');
+        }
+
+        // 5. Manage UI State (loading, question, error)
+        function setUiState(state) {
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('question-state').classList.add('hidden');
+            document.getElementById('result-area').classList.add('hidden');
+            document.getElementById('error-message').classList.add('hidden');
+
+            switch(state) {
+                case 'loading':
+                    document.getElementById('loading-state').classList.remove('hidden');
+                    break;
+                case 'question':
+                    document.getElementById('question-state').classList.remove('hidden');
+                    break;
+                case 'error':
+                    document.getElementById('error-message').classList.remove('hidden');
+                    document.getElementById('question-state').classList.remove('hidden'); // Show the structure even on error
+                    document.getElementById('topic').textContent = '[오류 발생]';
+                    document.getElementById('question-text').textContent = '문제를 불러오는 중 오류가 발생했습니다. 아래 버튼을 눌러 다시 시도해주세요.';
+                    document.getElementById('options-container').innerHTML = '';
+                    document.getElementById('submit-button').disabled = true;
+                    document.getElementById('result-area').classList.remove('hidden');
+                    document.getElementById('result-area').classList.add('bg-red-50');
+                    document.getElementById('result-message').textContent = '에러 메시지를 확인해주세요.';
+                    document.getElementById('result-message').classList.remove('text-green-600');
+                    document.getElementById('result-message').classList.add('text-red-600');
+                    document.getElementById('explanation-text').textContent = '문제를 가져오는 데 실패했습니다.';
+                    document.getElementById('next-button').textContent = '다시 시도';
+                    break;
+            }
+        }
+
+        // Initial call to generate the first question
+        window.onload = generateQuestion;
+    </script>
+</body>
+</html>
